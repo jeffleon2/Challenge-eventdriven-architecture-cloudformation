@@ -1,0 +1,230 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: 'CloudFormation template challenge cloud camp event driven architecture'
+Parameters:
+  VPCCidr:
+    Description: 'CIDR of the vpc to be created'
+    Type: String
+    
+  SubnetPublicCidr:
+    Description: 'CIDR of the public subnet to be created'
+    Type: String
+    
+
+  SubnetPrivateCidr:
+    Description: 'CIDR of the private subnet to be created'
+    Type: String
+    
+
+  ImageId:
+    Description: 'The ID of the AMI to use for the EC2 instance'
+    Type: String
+    Default: 'ami-0ebfd941bbafe70c6'
+
+  EmailToSubscribe:
+    Description: 'The Email To Subscribe'
+    Type: String
+    Default: 'jeffersonleon1527@gmail.com'
+
+  InstanceType:
+    Description: 'Select on of the possible instance types'
+    Type: String
+    Default: 't2.micro'
+    AllowedValues: ['t2.micro', 't2.small', 't2.medium']
+
+Resources:
+  VPC:
+    Type: 'AWS::EC2::VPC'
+    Properties:
+      CidrBlock: !Ref VPCCidr
+  InternetGateway:
+    Type: 'AWS::EC2::InternetGateway'
+  VPCGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref VPC
+  SubnetPublicProxy:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref SubnetPublicCidr
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref VPC
+  RouteTablePublicSubnet:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  RouteTableAssociationPublicSubnet:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTablePublicSubnet 
+      SubnetId: !Ref SubnetPublicProxy
+  RoutePublicSubnetToInternet:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTablePublicSubnet
+      DestinationCidrBlock: '0.0.0.0/0'
+      GatewayId: !Ref InternetGateway
+    DependsOn: VPCGatewayAttachment
+  SubnetPrivate:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: !Select [0, !GetAZs '']
+      CidrBlock: !Ref SubnetPrivateCidr
+      VpcId: !Ref VPC
+  RouteTablePrivateSubnet:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref VPC
+  RouteTableAssociationPrivateSubnet:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref RouteTablePrivateSubnet
+      SubnetId: !Ref SubnetPrivate
+  EIPNatGateway:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: 'vpc'
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      SubnetId: !Ref SubnetPublicProxy
+      AllocationId: !GetAtt 'EIPNatGateway.AllocationId'
+  RoutePrivateSubnetToInternet:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref RouteTablePrivateSubnet
+      DestinationCidrBlock: '0.0.0.0/0'
+      NatGatewayId: !Ref NatGateway
+  EC2SecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: 'Allow all egress traffic'
+      VpcId: !Ref VPC
+      SecurityGroupEgress:
+      - IpProtocol: '-1'
+        FromPort: '-1'
+        ToPort: '-1'
+        CidrIp: '0.0.0.0/0'
+  
+  ProducerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-producer-instance-profile
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+
+  ConsumerInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub ${AWS::StackName}-consumer-instance-profile
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+        - arn:aws:iam::aws:policy/AmazonSNSFullAccess
+        - arn:aws:iam::aws:policy/AmazonSQSFullAccess
+  
+  ProducerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${AWS::StackName}-producer-instance-profile
+      Roles:
+        - !Ref ProducerInstanceRole
+  
+  ConsumerInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub ${AWS::StackName}-consumer-instance-profile
+      Roles:
+        - !Ref ConsumerInstanceRole
+    
+  Queue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: 'challengequeue'
+      VisibilityTimeout: 60
+      MessageRetentionPeriod: 1209600
+      DelaySeconds: 0
+      ReceiveMessageWaitTimeSeconds: 0
+  
+  SNSTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      TopicName: 'challengetopic'
+      DisplayName: 'Challenge Topic'
+
+  EmailSubscription:
+    Type: AWS::SNS::Subscription
+    Properties:
+      TopicArn: !Ref SNSTopic
+      Protocol: 'email'
+      Endpoint: !Ref EmailToSubscribe
+  
+  ProducerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ProducerInstanceProfile
+      SubnetId: !Ref SubnetPrivate
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      UserData:
+        'Fn::Base64': !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y aws-cli
+          while true; do
+            aws sqs send-message --queue-url ${Queue.QueueUrl} --message-body "Hola esto es un mensaje de pruebas"
+            sleep 60
+          done
+    DependsOn: RoutePrivateSubnetToInternet
+
+  ConsumerInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref ImageId
+      InstanceType: !Ref InstanceType
+      IamInstanceProfile: !Ref ConsumerInstanceProfile
+      SubnetId: !Ref SubnetPrivate
+      SecurityGroupIds:
+        - !Ref EC2SecurityGroup
+      UserData:
+        'Fn::Base64': !Sub |
+          #!/bin/bash
+          yum update -y
+          yum install -y aws-cli jq
+          QUEUE_URL="${Queue.QueueUrl}"
+          echo "URL de la cola $QUEUE_URL"
+          TOPIC_ARN=${SNSTopic}
+          while true; do
+            message=$(aws sqs receive-message --queue-url "$QUEUE_URL" --max-number-of-messages 1 --region "us-east-1")
+            if [ -n "$message" ]; then
+              echo "Mensaje recibido:"
+              cuerpo_mensaje=$(echo "$message" | jq -r '.Messages[0].Body')
+              echo "$cuerpo_mensaje"
+              receipt_handle=$(echo "$message" | jq -r '.Messages[0].ReceiptHandle')
+              aws sqs delete-message --queue-url "$QUEUE_URL" --receipt-handle "$receipt_handle" --region "us-east-1"
+              echo "Mensaje eliminado de la cola."
+              echo "Enviando mensaje al topico."
+              aws sns publish --topic-arn "$TOPIC_ARN" --message "Hola, este es un mensaje desde EC2 con SNS"
+            else
+              echo "No hay mensajes en la cola."
+            fi
+            sleep 30
+          done
+    DependsOn: RoutePrivateSubnetToInternet
